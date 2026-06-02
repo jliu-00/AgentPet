@@ -9,16 +9,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     enum PetType {
         case cat
         case rat
+        case fightingRat
     }
 
     
-    var currentPet: PetType = .rat
+    var currentPet: PetType = .fightingRat
     let statusFilePath = NSHomeDirectory() + "/.agentpet_status"
     
     var catFrames: [NSImage] = []
     var ratFrames: [NSImage] = []
+    var fightingRatFrames: [NSImage] = []
     var mouseRestImage: NSImage?
     var catRestImage: NSImage?
+    var fightingRatRestImage: NSImage?
     
     func loadSprite(_ name: String) -> NSImage? {
         // If not bundled correctly, fallback to current directory + path
@@ -39,10 +42,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         
         let aspect = img.size.width / img.size.height
-        let newHeight: CGFloat = 17.0
+        let newHeight: CGFloat = 22.0
         let newWidth = newHeight * aspect
         img.size = NSSize(width: newWidth, height: newHeight)
-        img.isTemplate = true
         return img
     }
 
@@ -50,28 +52,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         for i in 0...3 {
             if let frame = loadSprite("cat\(i)") { catFrames.append(frame) }
             if let frame = loadSprite("rat\(i)") { ratFrames.append(frame) }
+            if let frame = loadSprite("fightingRat\(i)") { fightingRatFrames.append(frame) }
         }
         
         mouseRestImage = loadSprite("ratRest")
         catRestImage = loadSprite("catRest")
+        fightingRatRestImage = loadSprite("fightingRatRest")
         
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.image = catFrames.first
+        statusItem.button?.image = fightingRatRestImage ?? ratFrames.first
         
         let menu = NSMenu()
         let catItem = NSMenuItem(title: "Cat", action: #selector(selectCat), keyEquivalent: "")
-        catItem.state = .on
+        catItem.state = .off
         let mouseItem = NSMenuItem(title: "Rat", action: #selector(selectMouse), keyEquivalent: "")
+        mouseItem.state = .off
+        let fightingRatItem = NSMenuItem(title: "Fighting Rat", action: #selector(selectFightingRat), keyEquivalent: "")
+        fightingRatItem.state = .on
         
         menu.addItem(catItem)
         menu.addItem(mouseItem)
+        menu.addItem(fightingRatItem)
         menu.addItem(NSMenuItem.separator())
 
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
         
-        fileTimer = Timer.scheduledTimer(timeInterval: 0.5, target: self, selector: #selector(checkStatus), userInfo: nil, repeats: true)
-        animationTimer = Timer.scheduledTimer(timeInterval: 0.1, target: self, selector: #selector(updateFrame), userInfo: nil, repeats: true)
+        fileTimer = Timer.scheduledTimer(timeInterval: 0.15, target: self, selector: #selector(checkStatus), userInfo: nil, repeats: true)
     }
     
     @objc func selectCat() {
@@ -79,8 +86,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let menu = statusItem.menu {
             menu.items[0].state = .on
             menu.items[1].state = .off
+            menu.items[2].state = .off
         }
-        updateFrame()
+        applyCurrentStateImage()
     }
     
     @objc func selectMouse() {
@@ -88,38 +96,102 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let menu = statusItem.menu {
             menu.items[0].state = .off
             menu.items[1].state = .on
+            menu.items[2].state = .off
         }
-        updateFrame()
+        applyCurrentStateImage()
+    }
+    
+    @objc func selectFightingRat() {
+        currentPet = .fightingRat
+        if let menu = statusItem.menu {
+            menu.items[0].state = .off
+            menu.items[1].state = .off
+            menu.items[2].state = .on
+        }
+        applyCurrentStateImage()
+    }
+    
+    func applyCurrentStateImage() {
+        if wasWorking {
+            updateFrame()
+        } else {
+            let activeFrames: [NSImage]
+            let restImage: NSImage?
+            switch currentPet {
+            case .rat:
+                activeFrames = ratFrames
+                restImage = mouseRestImage
+            case .cat:
+                activeFrames = catFrames
+                restImage = catRestImage
+            case .fightingRat:
+                activeFrames = fightingRatFrames
+                restImage = fightingRatRestImage
+            }
+            statusItem.button?.image = restImage ?? activeFrames.first
+            currentFrame = 0
+        }
     }
     
     var lastTranscriptMtime: Double = 0
     var workingUntil: Date = Date.distantPast
     var cancelledUntil: Date = Date.distantPast
     var lastCancelCount: Int = 0
+    var lastCancelLogMtime: Double = 0
     var isInitialized: Bool = false
     var isChecking: Bool = false
     var lastCheckTime: Date = Date.distantPast
+    var wasWorking: Bool = false
+
+    let cancelLogPath = NSHomeDirectory() + "/Library/Logs/Antigravity/language_server.log"
 
     func getCancelCount() -> Int {
-        let task = Process()
-        task.launchPath = "/bin/sh"
-        task.arguments = ["-c", "timeout 1 grep -c 'executor is not currently running' ~/Library/Logs/Antigravity/language_server.log 2>/dev/null"]
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        do {
-            if #available(macOS 10.13, *) { try task.run() } else { task.launch() }
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            task.waitUntilExit()
-            if let output = String(data: data, encoding: .utf8), let count = Int(output.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                return count
-            }
-        } catch {}
-        return 0
+        // Only re-read log file when its mtime changes
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: cancelLogPath),
+              let modDate = attrs[.modificationDate] as? Date else { return lastCancelCount }
+        let mtime = modDate.timeIntervalSince1970
+        if mtime == lastCancelLogMtime { return lastCancelCount }
+        lastCancelLogMtime = mtime
+
+        guard let fileHandle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: cancelLogPath)) else { return 0 }
+        defer { try? fileHandle.close() }
+        fileHandle.seekToEndOfFile()
+        let fileSize = fileHandle.offsetInFile
+        let readOffset = max(0, Int64(fileSize) - 65536)
+        fileHandle.seek(toFileOffset: UInt64(readOffset))
+        let data = fileHandle.readDataToEndOfFile()
+        let text = String(decoding: data, as: UTF8.self)
+        let pattern = "executor is not currently running"
+        var count = 0
+        var searchRange = text.startIndex..<text.endIndex
+        while let range = text.range(of: pattern, range: searchRange) {
+            count += 1
+            searchRange = range.upperBound..<text.endIndex
+        }
+        return count
     }
 
-    func getLatestTranscriptState() -> (mtime: Double, isWorking: Bool) {
+    func getLatestTranscriptMtime() -> Double {
         let brainDir = NSHomeDirectory() + "/.gemini/antigravity/brain"
-        guard let convDirs = try? FileManager.default.contentsOfDirectory(atPath: brainDir) else { return (0, false) }
+        guard let convDirs = try? FileManager.default.contentsOfDirectory(atPath: brainDir) else { return 0 }
+        
+        var latestMtime: Double = 0
+        for conv in convDirs {
+            let path = brainDir + "/" + conv + "/.system_generated/logs/transcript.jsonl"
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+               let modDate = attrs[.modificationDate] as? Date {
+                let mtime = modDate.timeIntervalSince1970
+                if mtime > latestMtime {
+                    latestMtime = mtime
+                }
+            }
+        }
+        return latestMtime
+    }
+
+    func readTranscriptContent() -> Bool {
+        let brainDir = NSHomeDirectory() + "/.gemini/antigravity/brain"
+        guard let convDirs = try? FileManager.default.contentsOfDirectory(atPath: brainDir) else { return false }
         
         var latestFile: String?
         var latestMtime: Double = 0
@@ -136,10 +208,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         
         if Date().timeIntervalSince1970 - latestMtime > 300 {
-            return (latestMtime, false)
+            return false
         }
         
-        guard let path = latestFile, let fileHandle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else { return (0, false) }
+        guard let path = latestFile, let fileHandle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else { return false }
         defer { try? fileHandle.close() }
         
         fileHandle.seekToEndOfFile()
@@ -151,37 +223,56 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let text = String(decoding: data, as: UTF8.self)
         let lines = text.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
         if let lastLine = lines.last,
-           let lineData = lastLine.data(using: .utf8),
-           let dict = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
-           let type = dict["type"] as? String {
+           let lineData = lastLine.data(using: .utf8) {
+            
+            guard let dict = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                  let type = dict["type"] as? String else {
+                // Parse failed (e.g. mid-write), assume working to retry next cycle
+                return true
+            }
             
             // Agent is idle only when the last entry is a final PLANNER_RESPONSE with no pending tool calls
             if type == "PLANNER_RESPONSE" {
                 if dict["tool_calls"] == nil {
-                    return (latestMtime, false)
+                    return false
                 }
             }
-            return (latestMtime, true)
+            return true
         }
-        return (latestMtime, false)
+        return false
     }
 
     func performChecksAsync() {
-        // Allow fast re-checks: 0.3s interval instead of 1s to catch short-lived sessions
-        if Date().timeIntervalSince(lastCheckTime) < 0.3 || isChecking { return }
+        if Date().timeIntervalSince(lastCheckTime) < 0.1 || isChecking { return }
         isChecking = true
         lastCheckTime = Date()
         
         DispatchQueue.global(qos: .background).async {
-            let state = self.getLatestTranscriptState()
+            // Cheap: stat() only to get mtime
+            let mtime = self.getLatestTranscriptMtime()
+            let mtimeChanged = mtime > self.lastTranscriptMtime
+
+            // Expensive content read only when mtime changed, currently working, or not initialized
+            let contentIsWorking: Bool
+            if mtimeChanged || self.wasWorking || !self.isInitialized {
+                contentIsWorking = self.readTranscriptContent()
+            } else {
+                contentIsWorking = false
+            }
+
+            // Cancel count: only re-reads log when its own mtime changes
             let cancelCount = self.getCancelCount()
             
             DispatchQueue.main.async {
                 if !self.isInitialized {
-                    self.lastTranscriptMtime = state.mtime
+                    self.lastTranscriptMtime = mtime
                     self.lastCancelCount = cancelCount
                     self.isInitialized = true
+                    if contentIsWorking {
+                        self.workingUntil = Date().addingTimeInterval(5.0)
+                    }
                     self.isChecking = false
+                    self.applyWorkingState(contentIsWorking)
                     return
                 }
                 
@@ -190,72 +281,94 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     self.workingUntil = Date.distantPast
                     self.cancelledUntil = Date().addingTimeInterval(5.0)
                     self.lastCancelCount = cancelCount
+                    self.lastTranscriptMtime = mtime
                     self.isChecking = false
+                    self.applyWorkingState(false)
                     return
                 }
                 self.lastCancelCount = cancelCount
                 
                 // 2. If recently cancelled, ignore working state until new mtime arrives
-                //    that is newer than the cancel moment
                 if Date() < self.cancelledUntil {
-                    // Only exit cancel suppression if transcript mtime changed
-                    // (meaning a new user message was sent after the cancel)
-                    if state.mtime > self.lastTranscriptMtime {
+                    if mtimeChanged {
                         self.cancelledUntil = Date.distantPast
                     } else {
+                        self.lastTranscriptMtime = mtime
                         self.isChecking = false
                         return
                     }
                 }
                 
                 // 3. Mtime change = new activity, immediately start running
-                if state.mtime > self.lastTranscriptMtime {
-                    self.workingUntil = Date().addingTimeInterval(3.0)
+                if mtimeChanged {
+                    self.workingUntil = Date().addingTimeInterval(5.0)
                 }
                 
                 // 4. Content-based: if transcript says working, extend the timer
-                if state.isWorking {
-                    self.workingUntil = Date().addingTimeInterval(3.0)
+                if contentIsWorking {
+                    self.workingUntil = Date().addingTimeInterval(5.0)
                 }
                 
-                self.lastTranscriptMtime = state.mtime
+                self.lastTranscriptMtime = mtime
                 self.isChecking = false
+                
+                // Apply state immediately instead of waiting for next checkStatus cycle
+                self.applyWorkingState(Date() < self.workingUntil)
             }
         }
     }
 
-    func isAntigravityWorking() -> Bool {
-        performChecksAsync()
-        return Date() < workingUntil
+    func applyWorkingState(_ nowWorking: Bool) {
+        if nowWorking && !wasWorking {
+            if animationTimer == nil {
+                animationTimer = Timer.scheduledTimer(timeInterval: 0.1, target: self, selector: #selector(updateFrame), userInfo: nil, repeats: true)
+            }
+        } else if !nowWorking && wasWorking {
+            let activeFrames: [NSImage]
+            let restImage: NSImage?
+            switch currentPet {
+            case .rat:
+                activeFrames = ratFrames
+                restImage = mouseRestImage
+            case .cat:
+                activeFrames = catFrames
+                restImage = catRestImage
+            case .fightingRat:
+                activeFrames = fightingRatFrames
+                restImage = fightingRatRestImage
+            }
+            statusItem.button?.image = restImage ?? activeFrames.first
+            currentFrame = 0
+            animationTimer?.invalidate()
+            animationTimer = nil
+        }
+        isWorking = nowWorking
+        wasWorking = nowWorking
     }
 
     @objc func checkStatus() {
-        // 1. Native Antigravity monitoring
-        if isAntigravityWorking() {
-            isWorking = true
-            return
+        performChecksAsync()
+        let nowWorking: Bool
+        if Date() < workingUntil {
+            nowWorking = true
+        } else if let content = try? String(contentsOfFile: statusFilePath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines) {
+            nowWorking = (content == "working")
+        } else {
+            nowWorking = false
         }
-        
-        // 2. Fallback to external status file for custom scripts
-        do {
-            let content = try String(contentsOfFile: statusFilePath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
-            isWorking = (content == "working")
-        } catch {
-            isWorking = false
-        }
+        applyWorkingState(nowWorking)
     }
     
     @objc func updateFrame() {
-        let activeFrames = currentPet == .rat ? ratFrames : catFrames
-        if activeFrames.isEmpty { return }
-        
-        if isWorking {
-            currentFrame = (currentFrame + 1) % activeFrames.count
-            statusItem.button?.image = activeFrames[currentFrame]
-        } else {
-            statusItem.button?.image = currentPet == .rat ? (mouseRestImage ?? activeFrames.first) : (catRestImage ?? activeFrames.first)
-            currentFrame = 0
+        let activeFrames: [NSImage]
+        switch currentPet {
+        case .rat: activeFrames = ratFrames
+        case .cat: activeFrames = catFrames
+        case .fightingRat: activeFrames = fightingRatFrames
         }
+        if activeFrames.isEmpty { return }
+        currentFrame = (currentFrame + 1) % activeFrames.count
+        statusItem.button?.image = activeFrames[currentFrame]
     }
 }
 
