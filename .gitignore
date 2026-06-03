@@ -4,3 +4,4 @@
 agent_log*.txt
 test*.swift
 test*.py
+AGENT_MEMORY.md
