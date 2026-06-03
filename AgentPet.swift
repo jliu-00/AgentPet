@@ -62,6 +62,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         for i in 0...13 {
             if let frame = loadSprite("hulaCat\(i)") { hulaCatFrames.append(frame) }
+        }
+        for i in 0...15 {
             if let frame = loadSprite("hulaRat\(i)") { hulaRatFrames.append(frame) }
         }
         
