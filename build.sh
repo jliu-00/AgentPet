@@ -16,8 +16,8 @@ swiftc AgentPet.swift -o AgentPet.app/Contents/MacOS/AgentPet
 
 # Copy assets
 if [ -d "Assets" ]; then
-    cp Assets/*.png AgentPet.app/Contents/Resources/
-    cp Assets/AppIcon.icns AgentPet.app/Contents/Resources/
+    find Assets -name '*.png' -exec cp {} AgentPet.app/Contents/Resources/ \;
+    find Assets -name '*.icns' -exec cp {} AgentPet.app/Contents/Resources/ \;
 fi
 
 # Create Info.plist for app icon

@@ -10,6 +10,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case cat
         case rat
         case fightingRat
+        case hulaCat
+        case hulaRat
     }
 
     
@@ -19,9 +21,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var catFrames: [NSImage] = []
     var ratFrames: [NSImage] = []
     var fightingRatFrames: [NSImage] = []
+    var hulaCatFrames: [NSImage] = []
+    var hulaRatFrames: [NSImage] = []
     var mouseRestImage: NSImage?
     var catRestImage: NSImage?
     var fightingRatRestImage: NSImage?
+    var hulaCatRestImage: NSImage?
+    var hulaRatRestImage: NSImage?
     
     func loadSprite(_ name: String) -> NSImage? {
         // If not bundled correctly, fallback to current directory + path
@@ -54,10 +60,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if let frame = loadSprite("rat\(i)") { ratFrames.append(frame) }
             if let frame = loadSprite("fightingRat\(i)") { fightingRatFrames.append(frame) }
         }
+        for i in 0...13 {
+            if let frame = loadSprite("hulaCat\(i)") { hulaCatFrames.append(frame) }
+            if let frame = loadSprite("hulaRat\(i)") { hulaRatFrames.append(frame) }
+        }
         
         mouseRestImage = loadSprite("ratRest")
         catRestImage = loadSprite("catRest")
         fightingRatRestImage = loadSprite("fightingRatRest")
+        hulaCatRestImage = loadSprite("hulaCatRest")
+        hulaRatRestImage = loadSprite("hulaRatRest")
         
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = fightingRatRestImage ?? ratFrames.first
@@ -69,10 +81,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         mouseItem.state = .off
         let fightingRatItem = NSMenuItem(title: "Fighting Rat", action: #selector(selectFightingRat), keyEquivalent: "")
         fightingRatItem.state = .on
+        let hulaCatItem = NSMenuItem(title: "Hula Cat", action: #selector(selectHulaCat), keyEquivalent: "")
+        hulaCatItem.state = .off
+        let hulaRatItem = NSMenuItem(title: "Hula Rat", action: #selector(selectHulaRat), keyEquivalent: "")
+        hulaRatItem.state = .off
         
         menu.addItem(catItem)
         menu.addItem(mouseItem)
         menu.addItem(fightingRatItem)
+        menu.addItem(hulaCatItem)
+        menu.addItem(hulaRatItem)
         menu.addItem(NSMenuItem.separator())
 
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
@@ -87,6 +105,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             menu.items[0].state = .on
             menu.items[1].state = .off
             menu.items[2].state = .off
+            menu.items[3].state = .off
+            menu.items[4].state = .off
         }
         applyCurrentStateImage()
     }
@@ -97,6 +117,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             menu.items[0].state = .off
             menu.items[1].state = .on
             menu.items[2].state = .off
+            menu.items[3].state = .off
+            menu.items[4].state = .off
         }
         applyCurrentStateImage()
     }
@@ -107,12 +129,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             menu.items[0].state = .off
             menu.items[1].state = .off
             menu.items[2].state = .on
+            menu.items[3].state = .off
+            menu.items[4].state = .off
+        }
+        applyCurrentStateImage()
+    }
+    
+    @objc func selectHulaCat() {
+        currentPet = .hulaCat
+        if let menu = statusItem.menu {
+            menu.items[0].state = .off
+            menu.items[1].state = .off
+            menu.items[2].state = .off
+            menu.items[3].state = .on
+            menu.items[4].state = .off
+        }
+        applyCurrentStateImage()
+    }
+    
+    @objc func selectHulaRat() {
+        currentPet = .hulaRat
+        if let menu = statusItem.menu {
+            menu.items[0].state = .off
+            menu.items[1].state = .off
+            menu.items[2].state = .off
+            menu.items[3].state = .off
+            menu.items[4].state = .on
         }
         applyCurrentStateImage()
     }
     
     func applyCurrentStateImage() {
         if wasWorking {
+            animationTimer?.invalidate()
+            let interval: TimeInterval = (currentPet == .hulaRat || currentPet == .hulaCat) ? 0.15 : 0.1
+            animationTimer = Timer.scheduledTimer(timeInterval: interval, target: self, selector: #selector(updateFrame), userInfo: nil, repeats: true)
             updateFrame()
         } else {
             let activeFrames: [NSImage]
@@ -127,6 +178,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             case .fightingRat:
                 activeFrames = fightingRatFrames
                 restImage = fightingRatRestImage
+            case .hulaCat:
+                activeFrames = hulaCatFrames
+                restImage = hulaCatRestImage
+            case .hulaRat:
+                activeFrames = hulaRatFrames
+                restImage = hulaRatRestImage
             }
             statusItem.button?.image = restImage ?? activeFrames.first
             currentFrame = 0
@@ -321,7 +378,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applyWorkingState(_ nowWorking: Bool) {
         if nowWorking && !wasWorking {
             if animationTimer == nil {
-                animationTimer = Timer.scheduledTimer(timeInterval: 0.1, target: self, selector: #selector(updateFrame), userInfo: nil, repeats: true)
+                let interval: TimeInterval = (currentPet == .hulaRat || currentPet == .hulaCat) ? 0.15 : 0.1
+                animationTimer = Timer.scheduledTimer(timeInterval: interval, target: self, selector: #selector(updateFrame), userInfo: nil, repeats: true)
             }
         } else if !nowWorking && wasWorking {
             let activeFrames: [NSImage]
@@ -336,6 +394,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             case .fightingRat:
                 activeFrames = fightingRatFrames
                 restImage = fightingRatRestImage
+            case .hulaCat:
+                activeFrames = hulaCatFrames
+                restImage = hulaCatRestImage
+            case .hulaRat:
+                activeFrames = hulaRatFrames
+                restImage = hulaRatRestImage
             }
             statusItem.button?.image = restImage ?? activeFrames.first
             currentFrame = 0
@@ -365,6 +429,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case .rat: activeFrames = ratFrames
         case .cat: activeFrames = catFrames
         case .fightingRat: activeFrames = fightingRatFrames
+        case .hulaCat: activeFrames = hulaCatFrames
+        case .hulaRat: activeFrames = hulaRatFrames
         }
         if activeFrames.isEmpty { return }
         currentFrame = (currentFrame + 1) % activeFrames.count
