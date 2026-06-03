@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="Assets/ratRest.png" width="500" alt="AgentPet" />
+  <img src="Assets/HulaRat/hulaRat.gif" width="300" alt="AgentPet" />
 </div>
 
 <div align="right">
