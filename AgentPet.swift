@@ -1,9 +1,47 @@
 import Cocoa
 
+class PetImageView: NSImageView {
+    override var mouseDownCanMoveWindow: Bool {
+        return true // 允许直接拖拽图片来移动窗口
+    }
+    
+    override func scrollWheel(with event: NSEvent) {
+        guard let window = self.window else { return }
+        var frame = window.frame
+        let delta = event.scrollingDeltaY
+        // 根据滚动方向缩放
+        let scale: CGFloat = delta > 0 ? 1.05 : (delta < 0 ? 0.95 : 1.0)
+        if scale == 1.0 { return }
+        
+        let newWidth = max(30, min(1000, frame.width * scale))
+        let newHeight = max(30, min(1000, frame.height * scale))
+        
+        // 保持中心点缩放
+        let sizeDiffW = newWidth - frame.width
+        let sizeDiffH = newHeight - frame.height
+        frame.size.width = newWidth
+        frame.size.height = newHeight
+        frame.origin.x -= sizeDiffW / 2
+        frame.origin.y -= sizeDiffH / 2
+        
+        window.setFrame(frame, display: true)
+    }
+}
+
+class PetWindow: NSWindow {
+    override var canBecomeKey: Bool {
+        return true
+    }
+    override var canBecomeMain: Bool {
+        return true
+    }
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
-    var fileTimer: Timer?
     var animationTimer: Timer?
+    var idleTimer: Timer?
+    var fsEventStream: FSEventStreamRef?
     var isWorking = false
     var currentFrame = 0
     enum PetType {
@@ -28,6 +66,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var fightingRatRestImage: NSImage?
     var hulaCatRestImage: NSImage?
     var hulaRatRestImage: NSImage?
+    
+    var floatingWindow: NSWindow?
+    var floatingImageView: NSImageView?
+    var showFloatingWindowItem: NSMenuItem!
     
     func loadSprite(_ name: String) -> NSImage? {
         // If not bundled correctly, fallback to current directory + path
@@ -94,11 +136,114 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(hulaCatItem)
         menu.addItem(hulaRatItem)
         menu.addItem(NSMenuItem.separator())
+        
+        showFloatingWindowItem = NSMenuItem(title: "Show Floating Mascot", action: #selector(toggleFloatingWindow), keyEquivalent: "f")
+        showFloatingWindowItem.state = .off
+        menu.addItem(showFloatingWindowItem)
+        menu.addItem(NSMenuItem.separator())
 
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
         
-        fileTimer = Timer.scheduledTimer(timeInterval: 0.15, target: self, selector: #selector(checkStatus), userInfo: nil, repeats: true)
+        setupFSEvents()
+        handleFileEvent()
+    }
+    
+    func setupFSEvents() {
+        let pathsToWatch = [
+            NSHomeDirectory() + "/.gemini/antigravity/brain",
+            NSHomeDirectory() + "/Library/Logs/Antigravity",
+            NSHomeDirectory()
+        ] as CFArray
+        
+        let callback: FSEventStreamCallback = { (streamRef, clientCallBackInfo, numEvents, eventPaths, eventFlags, eventIds) in
+            guard let info = clientCallBackInfo else { return }
+            let appDelegate = Unmanaged<AppDelegate>.fromOpaque(info).takeUnretainedValue()
+            
+            let paths = unsafeBitCast(eventPaths, to: NSArray.self) as! [String]
+            var shouldCheck = false
+            for p in paths {
+                if p.hasSuffix("transcript.jsonl") || p.hasSuffix("language_server.log") || p.hasSuffix(".agentpet_status") {
+                    shouldCheck = true
+                    break
+                }
+            }
+            if shouldCheck {
+                appDelegate.handleFileEvent()
+            }
+        }
+        
+        var context = FSEventStreamContext(version: 0, info: UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque()), retain: nil, release: nil, copyDescription: nil)
+        
+        fsEventStream = FSEventStreamCreate(kCFAllocatorDefault,
+                                            callback,
+                                            &context,
+                                            pathsToWatch,
+                                            FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+                                            0.05,
+                                            UInt32(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents))
+        
+        if let stream = fsEventStream {
+            FSEventStreamSetDispatchQueue(stream, DispatchQueue.main)
+            FSEventStreamStart(stream)
+        }
+    }
+    
+    @objc func toggleFloatingWindow() {
+        if floatingWindow == nil {
+            setupFloatingWindow()
+        }
+        
+        if showFloatingWindowItem.state == .on {
+            showFloatingWindowItem.state = .off
+            floatingWindow?.orderOut(nil)
+        } else {
+            showFloatingWindowItem.state = .on
+            floatingWindow?.makeKeyAndOrderFront(nil)
+            applyCurrentStateImage()
+        }
+    }
+    
+    func setupFloatingWindow() {
+        let rect = NSRect(x: 100, y: 100, width: 150, height: 150)
+        let mask: NSWindow.StyleMask = [.borderless, .resizable]
+        floatingWindow = PetWindow(contentRect: rect, styleMask: mask, backing: .buffered, defer: false)
+        floatingWindow?.isOpaque = false
+        floatingWindow?.backgroundColor = .clear
+        floatingWindow?.isMovableByWindowBackground = true
+        floatingWindow?.level = .floating
+        floatingWindow?.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        floatingWindow?.hasShadow = false
+        
+        let imageView = PetImageView()
+        imageView.imageScaling = .scaleProportionallyUpOrDown
+        floatingWindow?.contentView = imageView
+        floatingImageView = imageView
+    }
+    
+    @objc func handleFileEvent() {
+        // Handle manual override
+        if let content = try? String(contentsOfFile: statusFilePath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines) {
+            if content == "working" {
+                self.workingUntil = Date().addingTimeInterval(5.0)
+            }
+        }
+        performChecksAsync()
+    }
+
+    func scheduleIdleCheck() {
+        idleTimer?.invalidate()
+        let delay = self.workingUntil.timeIntervalSinceNow
+        if delay > 0 {
+            idleTimer = Timer.scheduledTimer(withTimeInterval: delay + 0.1, repeats: false) { [weak self] _ in
+                guard let self = self else { return }
+                if Date() >= self.workingUntil {
+                    self.applyWorkingState(false)
+                }
+            }
+        } else {
+            self.applyWorkingState(false)
+        }
     }
     
     @objc func selectCat() {
@@ -188,6 +333,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 restImage = hulaRatRestImage
             }
             statusItem.button?.image = restImage ?? activeFrames.first
+            floatingImageView?.image = restImage ?? activeFrames.first
             currentFrame = 0
         }
     }
@@ -301,9 +447,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return false
     }
 
+    var needsAnotherCheck = false
+
     func performChecksAsync() {
-        if Date().timeIntervalSince(lastCheckTime) < 0.1 || isChecking { return }
+        if isChecking {
+            needsAnotherCheck = true
+            return
+        }
+        if Date().timeIntervalSince(lastCheckTime) < 0.05 {
+            // Delay slightly if firing too fast
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                self.performChecksAsync()
+            }
+            return
+        }
+        
         isChecking = true
+        needsAnotherCheck = false
         lastCheckTime = Date()
         
         DispatchQueue.global(qos: .background).async {
@@ -323,6 +483,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let cancelCount = self.getCancelCount()
             
             DispatchQueue.main.async {
+                func finishCheck() {
+                    self.isChecking = false
+                    if self.needsAnotherCheck {
+                        self.performChecksAsync()
+                    }
+                }
+
                 if !self.isInitialized {
                     self.lastTranscriptMtime = mtime
                     self.lastCancelCount = cancelCount
@@ -330,8 +497,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     if contentIsWorking {
                         self.workingUntil = Date().addingTimeInterval(5.0)
                     }
-                    self.isChecking = false
                     self.applyWorkingState(contentIsWorking)
+                    finishCheck()
                     return
                 }
                 
@@ -341,8 +508,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     self.cancelledUntil = Date().addingTimeInterval(5.0)
                     self.lastCancelCount = cancelCount
                     self.lastTranscriptMtime = mtime
-                    self.isChecking = false
                     self.applyWorkingState(false)
+                    finishCheck()
                     return
                 }
                 self.lastCancelCount = cancelCount
@@ -353,7 +520,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         self.cancelledUntil = Date.distantPast
                     } else {
                         self.lastTranscriptMtime = mtime
-                        self.isChecking = false
+                        finishCheck()
                         return
                     }
                 }
@@ -369,10 +536,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 
                 self.lastTranscriptMtime = mtime
-                self.isChecking = false
-                
                 // Apply state immediately instead of waiting for next checkStatus cycle
-                self.applyWorkingState(Date() < self.workingUntil)
+                let isWorkingNow = Date() < self.workingUntil
+                self.applyWorkingState(isWorkingNow)
+                self.scheduleIdleCheck()
+                
+                finishCheck()
             }
         }
     }
@@ -404,6 +573,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 restImage = hulaRatRestImage
             }
             statusItem.button?.image = restImage ?? activeFrames.first
+            floatingImageView?.image = restImage ?? activeFrames.first
             currentFrame = 0
             animationTimer?.invalidate()
             animationTimer = nil
@@ -412,19 +582,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         wasWorking = nowWorking
     }
 
-    @objc func checkStatus() {
-        performChecksAsync()
-        let nowWorking: Bool
-        if Date() < workingUntil {
-            nowWorking = true
-        } else if let content = try? String(contentsOfFile: statusFilePath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines) {
-            nowWorking = (content == "working")
-        } else {
-            nowWorking = false
-        }
-        applyWorkingState(nowWorking)
-    }
-    
     @objc func updateFrame() {
         let activeFrames: [NSImage]
         switch currentPet {
@@ -437,6 +594,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if activeFrames.isEmpty { return }
         currentFrame = (currentFrame + 1) % activeFrames.count
         statusItem.button?.image = activeFrames[currentFrame]
+        floatingImageView?.image = activeFrames[currentFrame]
     }
 }
 
